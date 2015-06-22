@@ -1,0 +1,90 @@
+// TempBug Example Code + luminosity sensor example code from E-Imp
+/* MAJOR VERSIONS  -----------------------------------------------------------*/
+//
+// 10 - TMP36 and LM60 plus built-in ambient light sensor
+// 13 - it works! t
+// 15 - temperature seemed very erratic, added preread
+//
+/* GLOBALS and CONSTANTS -----------------------------------------------------*/
+// use 1 minute for testing code revisions; 15 minutes for regular use
+const WAKEINTERVAL_MIN = 5; // interval between wake-and-reads in minutes
+
+const LM60_PIN = 7;
+const TMP36_PIN = 9;
+
+/* CLASS AND GLOBAL FUNCTION DEFINITIONS -------------------------------------*/
+
+/*
+* simple NTC thermistor simplified even more for simple temperature transistor
+*/
+class TMP36 {
+p_therm = null;
+constructor(pin) {
+this.p_therm = pin;
+this.p_therm.configure(ANALOG_IN);
+}
+// read voltage and convert to Fahrenheit 
+function read_f() {
+local Vin = hardware.voltage().tofloat();
+local Vpin = p_therm.read();
+local Vout = ( Vpin.tofloat() / 65535 ) * Vin ; 
+local temp_C = ((Vout * 1000 ) - 500) / 10.0; 
+local temp_F = (temp_C * 9/5) + 32.0;
+local mesg = "Vin = " + Vin + "; Vpin = " + Vpin  + "; Vout  = " + Vout + "; Temp =" + temp_C + "C / " + temp_F + "F"
+server.log(mesg);
+server.log("temp = " + temp_C + "C");
+temp_F = temp_F * 10; // format to nnn.n
+temp_F = temp_F.tointeger () / 10.0;
+return temp_F;
+}    
+} // end class
+
+class LM60 {
+p_therm = null;
+constructor(pin) {
+this.p_therm = pin;
+this.p_therm.configure(ANALOG_IN);
+}
+// read voltage and convert to Fahrenheit 
+function read_f() {
+local Vin = hardware.voltage().tofloat();
+local Vpin = p_therm.read(); // pre-read
+Vpin = p_therm.read(); 
+local Vout = ( Vpin / 65535.0 ) * Vin  ; // mV
+local temp_C = ((Vout * 1000 ) -  424.0 ) / 6.25;
+local temp_F = (temp_C * 9/5) + 32.0;
+local mesg = "Vin = " + Vin + "; Vpin = " + Vpin  + "; Vout  = " + Vout + "; Temp =" + temp_C + "C / " + temp_F + "F"
+server.log(mesg);
+server.log("temp = " + temp_C + "C");
+temp_F = temp_F * 10; // format to nnn.n
+temp_F = temp_F.tointeger () / 10.0;
+return temp_F;
+}    
+}
+
+/* RUNTIME BEGINS HERE -------------------------------------------------------*/
+
+tmp36_sns <- hardware.pin9;
+myTMP36 <- TMP36(tmp36_sns);
+
+lm60_sns <- hardware.pin7;
+myLM60 <- LM60(lm60_sns);
+
+// read and send to agent
+
+agent.send("temperature_tmp36", myTMP36.read_f());
+agent.send("ambient_light_level", hardware.lightlevel());
+agent.send("temperature_lm60", myLM60.read_f());
+
+//Sleep for 15 minutes and 1 second, minus the time past the 0:15
+//so we wake up near each 15 minute mark (prevents drifting on slow DHCP)
+//when imp wakes up it will execute from the top
+imp.onidle( function() {
+    server.sleepfor(1 + WAKEINTERVAL_MIN*60 - (time() % (WAKEINTERVAL_MIN*60)));
+});
+
+// full firmware is reloaded and run from the top on each wake cycle, so no need to construct a loop
+
+
+
+
