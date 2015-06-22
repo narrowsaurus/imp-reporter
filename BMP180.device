@@ -1,0 +1,234 @@
+/* IvanTwo  
+// Starting with Temperature Build 100
+//  Datasheet: http://www.adafruit.com/datasheets/BST-BMP180-DS000-09.pdf
+//
+// Based on:
+// E-Imp's Example Code + TSL luminosity sensor example code 
+// Adafruit's BMP180 library
+// Smittytone's bmp180.device.nut
+//      https://gist.github.com/smittytone/2aa569eecec90a04035c
+//
+// MAJOR VERSIONS  -----------------------------------------------------------*/
+// 2014-08-21 : Build 30 - works!  no oversampling yet
+//      Build 31 - changed sig digs on baro from 2 to 3
+//
+// NEXT: enable oversampling
+//
+/* GLOBALS and CONSTANTS -----------------------------------------------------*/
+// use 1 minute for testing code revisions; 15 minutes for regular use
+const WAKEINTERVAL_MIN = 5; // interval between wake-and-reads in minutes
+const  BMP180_I2CADDR = 0x77; // 7-bit address
+
+/* CLASS AND GLOBAL FUNCTION DEFINITIONS -------------------------------------*/
+class BMP180_Sensor
+{
+// Squirrel Class for Bosch BMP180 Temperature and Pressure Sensor
+// [http://www.adafruit.com/datasheets/BST-BMP180-DS000-09.pdf]
+// As used on the Adafruit BMP180 breakout board
+// [http://www.adafruit.com/products/1603]
+// Bus: I2C
+// Code by Tony Smith (@smittytone) June 2014
+// Version 1.0
+// Note: current version only returns temperature readings
+// Constants for BMP180
+ 
+ // Control register
+static BMP180_out_msb = "\xF6" // BMP_tempdata in adafruit
+static BMP180_out_lsb = "\xF7"
+static BMP180_ctrl = "\xF4"
+static BMP180_chipid = "\xD0"
+static BMP180_temp = "\x2E"
+static BMP180_press_oss0 = "\x34" // min overpressure sampling rate
+static BMP180_press_oss1 = "\x74" // 
+static BMP180_press_oss2 = "\xB4" //  
+static BMP180_press_oss3 = "\xF4" // max overpressure sampling rate
+
+//  Calibration registers (16 bits) - type short except where noted
+static BMP180_eprom_AC1 = "\xAA"
+static BMP180_eprom_AC2 = "\xAC"
+static BMP180_eprom_AC3 = "\xAE"
+static BMP180_eprom_AC4 = "\xB0" // unsigned short
+static BMP180_eprom_AC5 = "\xB2" // unsigned short
+static BMP180_eprom_AC6 = "\xB4" // unsigned short
+static BMP180_eprom_B1 = "\xB6"
+static BMP180_eprom_B2 = "\xB8"
+static BMP180_eprom_MB = "\xBA"
+static BMP180_eprom_MC = "\xBC"
+static BMP180_eprom_MD = "\xBE"
+
+// Exponents of 2 for pressure math 
+static E4 = 16.0
+static E8 = 256.0
+static E10 = 1024.0
+static E11 = 2048.0
+static E12 = 4096.0
+static E13 = 8192.0
+static E14 = 16384.0
+static E15 = 32768.0
+static E16 = 65536.0
+
+
+// Callibration values to be read at initialization
+// from BMP180's on-board EPROM
+// tesa - added pressure data - ac3-4, b1-2, mb
+_ac1 = 0
+_ac2 = 0
+_ac3 = 0
+_ac4 = 0
+_ac5 = 0
+_ac6 = 0
+_b1 = 0
+_b2 = 0
+_mb = 0
+_mc = 0
+_md = 0
+
+// use for calculations
+_b5 = 0
+_ut = 0 // raw temperature
+_up = 0 // raw pressure
+_t = 0 // temperature in 0.1 degrees C
+
+
+// I2C values
+_i2c_address = 0
+_i2c = null
+constructor (imp_i2c_bus, i2c_address_7_bit)
+{
+_i2c = imp_i2c_bus
+_i2c.configure(CLOCK_SPEED_100_KHZ);
+_i2c_address = i2c_address_7_bit << 1
+}
+function init()
+{
+// Read in per-chip callibration data for temperature conversions
+// ac5 and ac6 are unsigned 16-bit values
+
+local a = _i2c.read(_i2c_address, BMP180_eprom_AC1, 2);
+_ac1 = (((a[0] << 8) + a[1]) << 16) >> 16;
+a = _i2c.read(_i2c_address, BMP180_eprom_AC2, 2);
+_ac2 = (((a[0] << 8) + a[1]) << 16) >> 16;
+local a = _i2c.read(_i2c_address, BMP180_eprom_AC3, 2);
+_ac3 = (((a[0] << 8) + a[1]) << 16) >> 16;
+a = _i2c.read(_i2c_address, BMP180_eprom_AC4, 2);
+_ac4 = (a[0] << 8) + a[1]; // unsigned short
+local a = _i2c.read(_i2c_address, BMP180_eprom_AC5, 2);
+_ac5 = (a[0] << 8) + a[1]; // unsigned short
+a = _i2c.read(_i2c_address, BMP180_eprom_AC6, 2);
+_ac6 = (a[0] << 8) + a[1]; // unsigned short
+ 
+// mc and md are signed 16-bit values, so need to be sign-extended
+// to the 32-bit values Squirrel uses
+a = _i2c.read(_i2c_address, BMP180_eprom_MB, 2);
+_mb = (((a[0] << 8) + a[1]) << 16) >> 16;
+a = _i2c.read(_i2c_address, BMP180_eprom_MC, 2);
+_mc = (((a[0] << 8) + a[1]) << 16) >> 16;
+a = _i2c.read(_i2c_address, BMP180_eprom_MD, 2);
+_md = (((a[0] << 8) + a[1]) << 16) >> 16;
+}
+ 
+function get_temp()
+{
+// Get the current temperature data, and convert
+// from internal units to degrees Celsius
+
+// Signal BMP180 to take a reading
+_i2c.write(_i2c_address, BMP180_ctrl + BMP180_temp)
+// Pause 5ms while chip's ADC digitises the reading
+imp.sleep(0.005)
+// Get the reading
+local a = _i2c.read(_i2c_address, BMP180_out_msb, 2)
+// Convert to Celsuis
+_ut = (a[0] << 8) + a[1] // uncompensated temperature value
+local x1 = (_ut - _ac6) * _ac5 / E15
+local x2 = _mc * E11 / (x1 + _md)
+_b5 = x1 + x2
+_t = (_b5 + 8) / 16.0 // true temp in 0.1 degrees C  
+local temperature = (_b5 + 8) / 160.0
+
+return temperature
+}
+
+
+function get_pressure()
+{
+// Get temperature and pressure raw data
+// and adjust pressure for temperature
+// Signal BMP180 to take a reading
+_i2c.write(_i2c_address, BMP180_ctrl + BMP180_press_oss0)
+// Pause 5ms while chip's ADC digitises the reading
+imp.sleep(0.005)
+// Get the reading; no oversampling for now
+local oversampling = 0
+local a = _i2c.read(_i2c_address, BMP180_out_msb, 2)
+_up = (a[0] << 8) + a[1]
+
+// do pressure calcs
+// local vars: X1-X3, B3, B6
+// global vars: _ac[1-6], _b[12], _m[bcd] 
+local B6 = _b5 - 4000;
+local X1 = (_b2 * ( (B6 * B6) / E12 )) / E11;
+local X2 = (_ac2 * B6) / E11;
+local X3 = X1 + X2;
+//local B3 = (((_ac1*4 + X3) << oversampling) + 2) / 4;
+local B3 = (((_ac1*4 + X3)) + 2) / 4;
+X1 = (_ac3 * B6) / E13;
+X2 = (_b1 * ((B6 * B6) / E12)) / E16;
+X3 = ((X1 + X2) + 2) / 4;
+local B4 = (_ac4 * (X3 + 32768.0)) / E15;
+//local B7 = (_up - B3) * ( 50000 >> oversampling );
+local B7 = (_up - B3) * ( 50000 );
+local p = 0;
+if (B7 < 0x80000000) {
+p = (B7 * 2) / B4;
+} else {
+p = (B7 / B4) * 2;
+}
+X1 = (p / E8 ) * (p / E8);
+X1 = (X1 * 3038) / E16;
+X2 = (-7357 * p) / E16;
+p = p + ((X1 + X2 + 3791) / 16.0); // pressure in pascals
+
+local altitude_meters = 72;
+local sealevel_p = (p / math.pow(1.0-altitude_meters/44330, 5.255));
+ 
+local p_inHg = 0.000295333727 * p;
+
+return p_inHg;
+} // end get_pressure
+} // end class BMP180_Sensor
+
+// PROGRAM START POINT
+
+// Set up alias for i2c and set bus to 100kHz
+i2c <- hardware.i2c12;
+//i2c.configure(CLOCK_SPEED_100_KHZ);
+
+bmp <- BMP180_Sensor(i2c,BMP180_I2CADDR);
+bmp.init();
+
+local tempC = bmp.get_temp();
+local tempF = (tempC * 9 / 5 ) + 32;
+tempF = tempF * 10;  // NNN.N
+tempF = tempF.tointeger () / 10.0;
+
+agent.send("temperature", tempF);
+
+local inHg = bmp.get_pressure();
+inHg = inHg * 1000;
+inHg = inHg.tointeger() / 1000.0;
+agent.send("pressure", inHg);
+
+
+//Sleep for 15 minutes and 1 second, minus the time past the 0:15
+//so we wake up near each 15 minute mark (prevents drifting on slow DHCP)
+//when imp wakes up it will execute from the top
+imp.onidle( function() {
+    server.sleepfor(1 + WAKEINTERVAL_MIN*60 - (time() % (WAKEINTERVAL_MIN*60)));
+});
+
+// full firmware is reloaded and run from the top on each wake cycle, so no need to construct a loop
+
+
+
+
